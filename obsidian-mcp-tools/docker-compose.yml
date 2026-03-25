@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  obsidian-mcp-tools:
+    build: .
+    image: obsidian-mcp-tools:latest
+    container_name: obsidian-mcp-tools
+    # stdio 방식을 위해 stdin(i)과 tty(t) 오픈 유지 (필수)
+    stdin_open: true
+    tty: true
+    # SSE 모드를 위해 8000번 포트 개방 (MCP_TRANSPORT=stdio 일 땐 무시됨)
+    ports:
+      - "8000:8000"
+    # 설정 파일 주입
+    env_file:
+      - .env
+    # Host 머신의 Obsidian API(27124) 접속을 위해 브릿지 호스트명 설정
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

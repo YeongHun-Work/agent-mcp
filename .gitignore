@@ -1,0 +1,79 @@
+# =========================
+# .gitignore for Global project
+# =========================
+
+# AI
+.agent/
+.cursorrules
+rules/
+
+# Node.js / Environment
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+dist/
+dist-ssr/
+build/
+*.local
+.env
+.env.*
+!.env.example
+target/
+
+# Java / Spring Boot / Gradle
+.gradle/
+build/
+bin/
+out/
+target/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+# IDE and Editor Files
+.idea/
+*.iws
+*.iml
+*.ipr
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+.vscode/
+!.vscode/extensions.json
+*.sw?
+*.suo
+*.sln
+*.njsproj
+
+# NetBeans
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+logs/
+log/
+*.log
+*.log.zip
