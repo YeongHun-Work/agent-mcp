@@ -136,8 +136,18 @@ async def handle_sse(request: Request):
 async def handle_messages(request: Request):
     await sse.handle_post_message(request.scope, request.receive, request._send)
 
+import sys
+
 def main():
-    if MCP_TRANSPORT == "sse":
+    # .env 의 값을 기본으로 하되, 실행 시 명령줄(Argument)로 넘어온 값이 있으면 우선 적용합니다.
+    mode = MCP_TRANSPORT
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--stdio":
+            mode = "stdio"
+        elif sys.argv[1] == "--sse":
+            mode = "sse"
+
+    if mode == "sse":
         print(f"Starting agent-auto-memo with SSE transport on port {SSE_PORT}...")
         uvicorn.run(app, host="0.0.0.0", port=SSE_PORT)
     else:
