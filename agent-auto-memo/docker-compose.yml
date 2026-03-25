@@ -1,10 +1,10 @@
 version: '3.8'
 
 services:
-  obsidian-mcp-tools:
+  agent-auto-memo:
     build: .
-    image: obsidian-mcp-tools:latest
-    container_name: obsidian-mcp-tools
+    image: agent-auto-memo:latest
+    container_name: agent-auto-memo
     # stdio 방식을 위해 stdin(i)과 tty(t) 오픈 유지 (필수)
     stdin_open: true
     tty: true
@@ -14,7 +14,7 @@ services:
     # 설정 파일 주입
     env_file:
       - .env
-    # Host 머신의 Obsidian API(27124) 접속을 위해 브릿지 호스트명 설정
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # 옵시디언 볼트 폴더를 컨테이너 내부로 마운트 (호스트경로:컨테이너경로 일치 권장)
+    volumes:
+      - /data/workspace/obsidian:/data/workspace/obsidian
     restart: unless-stopped

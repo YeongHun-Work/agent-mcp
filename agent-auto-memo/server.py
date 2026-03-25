@@ -8,7 +8,7 @@ from mcp.server import Server
 import mcp.types as types
 from mcp.server.stdio import stdio_server
 
-import httpx
+import aiofiles
 
 # FastAPI imports for SSE
 from fastapi import FastAPI
@@ -20,14 +20,13 @@ from starlette.requests import Request
 load_dotenv()
 
 # Configuration
-OBSIDIAN_API_KEY = os.getenv("OBSIDIAN_API_KEY", "")
-OBSIDIAN_BASE_URL = os.getenv("OBSIDIAN_BASE_URL", "https://127.0.0.1:27124").rstrip("/")
+OBSIDIAN_VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH", "/data/workspace/obsidian/").rstrip("/")
 OBSIDIAN_TARGET_FOLDER = os.getenv("OBSIDIAN_TARGET_FOLDER", "Memo").strip("/")
 MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio").lower()
 SSE_PORT = int(os.getenv("SSE_PORT", "8000"))
 
-# Obsidian-mcp-tools 
-server = Server("Obsidian-mcp-tools")
+# agent-auto-memo
+server = Server("agent-auto-memo")
 
 def sanitize_filename(title: str) -> str:
     # 특수문자 제거 및 공백을 하이픈으로 대체
@@ -71,8 +70,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     if name != "save_memo":
         raise ValueError(f"Unknown tool: {name}")
 
-    if not OBSIDIAN_API_KEY or OBSIDIAN_API_KEY == "your_api_key_here":
-        return [types.TextContent(type="text", text="Error: OBSIDIAN_API_KEY가 .env 파일에 올바르게 설정되지 않았습니다.")]
+    if not OBSIDIAN_VAULT_PATH or OBSIDIAN_VAULT_PATH == "/path/to/your/obsidian/vault":
+        return [types.TextContent(type="text", text="Error: OBSIDIAN_VAULT_PATH가 .env 파일에 올바르게 설정되지 않았습니다.")]
 
     title = arguments["title"]
     url = arguments["url"]
@@ -92,38 +91,35 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     if url not in final_content:
         final_content += f"\n\n---\n**Source:** {url}"
 
-    # Local REST API 엔드포인트 생성: PUT /vault/{target_folder}/{filename}
+    # 파일 시스템 저장 로직
     if target_folder:
-        endpoint = f"{OBSIDIAN_BASE_URL}/vault/{target_folder}/{filename}"
+        target_dir = os.path.join(OBSIDIAN_VAULT_PATH, target_folder)
     else:
-        # 타겟 폴더가 비어있으면 볼트 루트(/vault/)에 직접 저장
-        endpoint = f"{OBSIDIAN_BASE_URL}/vault/{filename}"
+        # 타겟 폴더가 비어있으면 볼트 루트에 직접 저장
+        target_dir = OBSIDIAN_VAULT_PATH
     
-    headers = {
-        "Authorization": f"Bearer {OBSIDIAN_API_KEY}",
-        "Content-Type": "text/markdown"
-    }
+    file_path = os.path.join(target_dir, filename)
 
     try:
-        # Local REST API 플러그인은 기본적으로 self-signed 인증서를 사용하므로 verify=False 처리
-        async with httpx.AsyncClient(verify=False) as client:
-            response = await client.put(endpoint, content=final_content, headers=headers)
-            response.raise_for_status()
+        # 대상 폴더가 없으면 생성
+        os.makedirs(target_dir, exist_ok=True)
+        
+        # 파일 직접 쓰기 (비동기)
+        async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+            await f.write(final_content)
             
-            return [types.TextContent(
-                type="text", 
-                text=f"성공적으로 메모가 저장되었습니다! 폴더: '{target_folder or 'Vault Root'}', 파일명: '{filename}'"
-            )]
-    except httpx.HTTPStatusError as e:
-        return [types.TextContent(type="text", text=f"Obsidian API 통신 에러: {e.response.status_code} - {e.response.text}")]
+        return [types.TextContent(
+            type="text", 
+            text=f"성공적으로 메모가 로컬에 저장되었습니다! 경로: '{file_path}'"
+        )]
     except Exception as e:
-        return [types.TextContent(type="text", text=f"메모 저장 실패: {str(e)}")]
+        return [types.TextContent(type="text", text=f"메모 로컬 저장 중 실패: {str(e)}")]
 
 # ==========================================
 # Transport Runners
 # ==========================================
 async def run_stdio():
-    print("Starting Obsidian-mcp-tools with stdio transport...", flush=True)
+    print("Starting agent-auto-memo with stdio transport...", flush=True)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
@@ -142,7 +138,7 @@ async def handle_messages(request: Request):
 
 def main():
     if MCP_TRANSPORT == "sse":
-        print(f"Starting Obsidian-mcp-tools with SSE transport on port {SSE_PORT}...")
+        print(f"Starting agent-auto-memo with SSE transport on port {SSE_PORT}...")
         uvicorn.run(app, host="0.0.0.0", port=SSE_PORT)
     else:
         # 기본값: stdio
