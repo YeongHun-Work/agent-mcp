@@ -30,4 +30,4 @@ jobs:
             cd agent-auto-memo
             
             # 4. 해당 폴더에서만 컨테이너를 올립니다.
-            docker-compose up -d --build
+            docker compose up -d --build
