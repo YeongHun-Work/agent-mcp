@@ -1,5 +1,5 @@
-# 초경량 Alpine Linux 기반 Python 3.11 이미지 (안정성과 가벼움 보장)
-FROM python:3.11-alpine
+# 경량 Debian 기반 Python 3.11 이미지 (ARM 환경 패키지 설치 호환성 보장)
+FROM python:3.11-slim
 
 # 컨테이너 내 작업 디렉토리 설정
 WORKDIR /app
