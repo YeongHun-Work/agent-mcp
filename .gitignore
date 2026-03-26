@@ -5,6 +5,7 @@
 # AI
 .agent/
 .cursorrules
+.claude
 rules/
 
 # Node.js / Environment

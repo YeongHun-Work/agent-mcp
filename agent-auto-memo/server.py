@@ -127,16 +127,22 @@ async def run_stdio():
 # SSE 통신을 위한 Starlette 설정
 sse = SseServerTransport("/messages")
 
-async def handle_sse(scope, receive, send):
-    async with sse.connect_sse(scope, receive, send) as streams:
-        await server.run(streams[0], streams[1], server.create_initialization_options())
+class SSEHandler:
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return
+        async with sse.connect_sse(scope, receive, send) as streams:
+            await server.run(streams[0], streams[1], server.create_initialization_options())
 
-async def handle_messages(scope, receive, send):
-    await sse.handle_post_message(scope, receive, send)
+class MessageHandler:
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return
+        await sse.handle_post_message(scope, receive, send)
 
 app = Starlette(debug=True, routes=[
-    Route("/sse", endpoint=handle_sse),
-    Route("/messages", endpoint=handle_messages, methods=["POST"])
+    Route("/sse", endpoint=SSEHandler()),
+    Route("/messages", endpoint=MessageHandler(), methods=["POST"])
 ])
 
 

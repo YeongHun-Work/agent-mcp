@@ -1,0 +1,16 @@
+# 로컬 Python 가상환경
+.venv/
+__pycache__/
+*.pyc
+
+# 로컬 테스트용 파일 (Windows 개발환경 전용)
+test-source/
+run_test.bat
+run_test.py
+run_test2.py
+test_local.py
+test_continuous.py
+server_debug.log
+
+# 로컬 테스트 메모 출력 폴더
+memo/
