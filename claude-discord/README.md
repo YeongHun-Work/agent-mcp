@@ -103,6 +103,7 @@ GUILD_ID=
   Claude CLI 인증 정보를 Docker named volume으로 저장
 
 이 프로젝트는 더 이상 Claude 인증 정보를 호스트 홈 디렉터리에서 bind mount 하지 않습니다.
+이미지 빌드 시 `/home/node/.claude` 디렉터리를 미리 만들고 `node:node` 소유권을 부여합니다.
 
 ## Claude CLI 인증 방법
 
@@ -160,6 +161,17 @@ claude -p "안녕"
 인증이 꼬였거나 만료된 경우:
 
 ```bash
+docker exec -it claude-discord sh
+claude
+```
+
+기존 볼륨이 `root:root` 소유로 꼬인 경우 한 번만 아래처럼 복구합니다.
+
+```bash
+docker exec -u 0 -it claude-discord sh
+chown -R node:node /home/node/.claude
+exit
+
 docker exec -it claude-discord sh
 claude
 ```

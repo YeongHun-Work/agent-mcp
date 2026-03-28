@@ -30,9 +30,10 @@ RUN npm install --omit=dev
 # ─── 소스 복사 ────────────────────────────────────────────────────────────────
 COPY . .
 
-# ─── 데이터 디렉토리 생성 ─────────────────────────────────────────────────────
-# SQLite DB, 로그 등 영속 데이터 저장 경로
-RUN mkdir -p /app/data && chown node:node /app/data
+# ─── 데이터 및 Claude 인증 디렉토리 생성 ──────────────────────────────────────
+# SQLite 데이터와 Claude 인증 디렉토리를 미리 node 소유로 준비
+RUN mkdir -p /app/data /home/node/.claude \
+  && chown -R node:node /app/data /home/node/.claude
 
 # ─── 보안: 비루트 사용자로 실행 ──────────────────────────────────────────────
 USER node
