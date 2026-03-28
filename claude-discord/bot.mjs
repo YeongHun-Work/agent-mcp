@@ -151,6 +151,8 @@ function callClaude(prompt) {
       ? prompt.slice(0, INPUT_MAX_CHARS)
       : prompt;
 
+    console.log(`[Claude CLI] 호출 시작 | 프롬프트 길이: ${safePrompt.length}자`);
+
     const proc = spawn(
       'claude',
       ['-p', safePrompt, '--dangerously-skip-permissions'],
@@ -165,11 +167,17 @@ function callClaude(prompt) {
       }
     );
 
+    console.log(`[Claude CLI] PID: ${proc.pid}`);
+
     let stdout = '';
     let stderr = '';
 
     proc.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-    proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    proc.stderr.on('data', (chunk) => {
+      const msg = chunk.toString();
+      stderr += msg;
+      console.log(`[Claude CLI][stderr] ${msg.trim()}`);
+    });
 
     // 타임아웃 처리
     const timer = setTimeout(() => {
@@ -179,17 +187,20 @@ function callClaude(prompt) {
 
     proc.on('close', (code) => {
       clearTimeout(timer);
+      console.log(`[Claude CLI] 종료 | code: ${code} | stdout: ${stdout.length}자 | stderr: ${stderr.length}자`);
       if (code === 0) {
         // ANSI 이스케이프 코드 제거
         const cleaned = stdout.replace(/\x1B\[[0-9;]*[mGKHF]/g, '').trim();
         resolve(cleaned);
       } else {
+        console.error(`[Claude CLI][실패] stderr: ${stderr.trim()}`);
         reject(new Error(`Claude CLI 종료 코드 ${code}: ${stderr.trim()}`));
       }
     });
 
     proc.on('error', (err) => {
       clearTimeout(timer);
+      console.error(`[Claude CLI][error] ${err.message}`);
       reject(new Error(`Claude CLI 실행 실패: ${err.message}`));
     });
   });
