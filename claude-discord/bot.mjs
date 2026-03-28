@@ -153,7 +153,7 @@ function callClaude(prompt) {
 
     const proc = spawn(
       'claude',
-      ['-p', safePrompt, '--dangerously-skip-permissions'],
+      ['-p', safePrompt, '--dangerously-skip-permissions', '--output-format', 'text'],
       {
         shell: false,  // 보안: shell injection 방지
         stdio: ['ignore', 'pipe', 'pipe'],  // stdin 닫기 (< /dev/null 동일)
