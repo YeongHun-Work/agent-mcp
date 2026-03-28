@@ -20,20 +20,34 @@
 ### 1. Docker Compose (추천! 가장 깔끔한 SSE 서버 상시 구동)
 리눅스 쉘에서 아래 커맨드 하나면 빌드와 함께 백그라운드 상시 구동이 이루어집니다:
 ```bash
-docker-compose up -d --build
+docker compose up -d --build
 ```
-컨테이너가 정상적으로 올라오면 OpenClaw나 원격 클라이언트에서 `http://<리눅스IP/로컬>:8000/sse` 엔드포인트로 MCP에 연결할 수 있게 됩니다.
+컨테이너가 정상적으로 올라오면 클라이언트에서 아래 엔드포인트 중 하나로 연결할 수 있습니다.
 
-### 2. 하이브리드 연결 (OpenClaw 등 AI 클라이언트 연동)
-이제 백그라운드에는 8000번 포트로 SSE 웹서버가 영구적으로 켜져 있습니다. 사용하시는 환경과 취향에 따라 다음 두 가지 방식 중 하나를 골라 AI 에이전트(OpenClaw)에 연결하세요!
+### 2. 연결 방식 선택
 
-#### ✌️ 방식 A: 도커 내부망 접속 (SSE 방식 - 추천)
-AI 클라이언트(OpenClaw)가 동일한 도커 네트워크에 속해 있다면, 웹 브라우저 주소로 편하게 통신할 수 있습니다.
-- **연결 형태**: `SSE`
-- **URL**: `http://agent-auto-memo:8000/sse`
+#### 방식 A: MCP Streamable HTTP (신규 — 최신 클라이언트 권장)
+OpenClaw 등 최신 MCP 클라이언트는 SSE 대신 단일 HTTP 트랜잭션 방식을 사용합니다.
+- **URL**: `http://<서버IP>:8000/mcp`
+- SSE 연결을 유지할 필요 없음, 요청/응답이 하나의 HTTP 요청으로 처리
 
-#### ✌️ 방식 B: 네트워크 격리 무시 치트키 (STDIO 파이프 방식)
-네트워크를 묶어주기 귀찮거나 망이 완전히 분리되어 있다면, 이미 켜져있는 컨테이너의 뒷문으로 몰래 들어가 `stdio` 전용 프로세스만 가볍게 띄워서 소통할 수 있습니다.
+#### 방식 B: MCP SSE (기존 — Claude Desktop 등 호환)
+- **URL**: `http://<서버IP>:8000/sse`
+
+#### 방식 C: REST API (HTTP 툴로 직접 호출)
+MCP 없이 HTTP 툴로 직접 저장 가능합니다.
+```bash
+# 메모 저장
+POST http://<서버IP>:8000/api/save-memo
+Content-Type: application/json
+{ "title": "제목", "url": "https://...", "content": "내용", "folder": "폴더명" }
+
+# 최근 저장 조회
+GET http://<서버IP>:8000/api/last-save?count=1
+```
+
+#### 방식 D: STDIO 파이프 (네트워크 없이 직접 연결)
+컨테이너가 실행 중일 때 stdio 프로세스로 직접 연결:
 - **Command**: `docker`
 - **Args**: `exec -i agent-auto-memo python server.py --stdio`
 
