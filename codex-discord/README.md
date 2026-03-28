@@ -113,8 +113,11 @@ Codex CLI가 실제로 MCP 툴을 호출하려면 서버의 config.json에 mcpSe
 DISCORD_TOKEN=    # Discord Developer Portal > Bot > Token
 CLIENT_ID=        # Discord Developer Portal > General Information > Application ID
 GUILD_ID=         # (선택) 길드 ID — 설정 시 해당 서버에만 즉시 명령어 등록
-OPENAI_API_KEY=   # platform.openai.com/api-keys
 ```
+
+> `OPENAI_API_KEY`는 `.env`에 설정하지 않습니다.
+> `~/.codex` 디렉토리를 볼륨 마운트하면 Codex CLI가 해당 경로의 설정 파일에서 직접 읽습니다.
+> (docker-compose.yml: `~/.codex:/home/node/.codex`)
 
 ---
 
@@ -146,7 +149,7 @@ CREATE TABLE channel_skills (
 ```bash
 # 1. 환경변수 설정
 cp .env.example .env
-# .env 편집 (DISCORD_TOKEN, CLIENT_ID, GUILD_ID, OPENAI_API_KEY)
+# .env 편집 (DISCORD_TOKEN, CLIENT_ID, GUILD_ID)
 
 # 2. data 디렉토리 생성
 mkdir -p data
@@ -185,7 +188,7 @@ docker logs codex-discord --tail 50
 | 증상 | 원인 | 해결 |
 |------|------|------|
 | `SQLITE_CANTOPEN` | `data/` 디렉토리 없거나 권한 없음 | `mkdir -p data` 확인 |
-| `OPENAI_API_KEY is not set` | `.env`에 API 키 미설정 | `.env` 파일에 `OPENAI_API_KEY` 추가 |
+| Codex CLI 인증 실패 | `~/.codex` 볼륨 마운트 누락 또는 설정 파일 없음 | 서버에 `~/.codex` 설정 파일 존재 여부 확인 |
 | `Codex CLI spawn failed` | `@openai/codex` 미설치 | Docker 재빌드 (`docker compose up -d --build`) |
 | `Codex CLI timeout` | 느린 네트워크 또는 복잡한 요청 | `CODEX_TIMEOUT_MS` 상수 값 증가 (기본 180초) |
 | 슬래시 명령어 미반영 | CLIENT_ID 미설정 또는 등록 미실행 | `docker exec codex-discord node deploy-commands.mjs` |

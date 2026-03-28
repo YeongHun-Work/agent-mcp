@@ -33,10 +33,8 @@ const DISCORD_MSG_LIMIT  = 2_000;    // Discord 메시지 한 건 최대 길이
 // ─────────────────────────────────────────────
 // 시작 환경변수 검증
 // ─────────────────────────────────────────────
-if (!process.env.OPENAI_API_KEY) {
-  console.error('[오류] OPENAI_API_KEY 환경변수가 설정되지 않았습니다. .env 파일을 확인하세요.');
-  process.exit(1);
-}
+// OPENAI_API_KEY는 ~/.codex 볼륨 마운트를 통해 Codex CLI가 직접 읽으므로
+// bot.mjs에서 별도 검증하지 않음.
 
 // ─────────────────────────────────────────────
 // SQLite 초기화

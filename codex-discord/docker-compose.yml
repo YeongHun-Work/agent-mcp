@@ -16,7 +16,7 @@ services:
     volumes:
       # SQLite DB 및 영속 데이터를 호스트와 공유
       - ./data:/app/data
-      # Codex CLI 설정 파일 마운트 (필요 시)
+      # Codex CLI 설정 파일 마운트 (API 키 및 설정 포함 — 필수)
       - ~/.codex:/home/node/.codex
       # MCP 스킬 목록 — 호스트에서 수정 후 restart만으로 반영 (재빌드 불필요)
       - ./mcp-skills.json:/app/mcp-skills.json:ro

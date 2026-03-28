@@ -8,10 +8,10 @@ FROM --platform=linux/arm/v7 node:22-bookworm-slim
 # ─── 시스템 패키지 설치 ───────────────────────────────────────────────────────
 # better-sqlite3 네이티브 모듈 빌드에 필요한 도구 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    make \
-    g++ \
-    sqlite3 \
+  python3 \
+  make \
+  g++ \
+  sqlite3 \
   && rm -rf /var/lib/apt/lists/*
 
 # ─── Gemini CLI 전역 설치 ─────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ COPY . .
 
 # ─── 데이터 디렉토리 생성 ─────────────────────────────────────────────────────
 # SQLite DB, 로그 등 영속 데이터 저장 경로
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data && chown node:node /app/data
 
 # ─── 보안: 비루트 사용자로 실행 ──────────────────────────────────────────────
 USER node
