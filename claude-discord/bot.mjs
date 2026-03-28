@@ -151,11 +151,16 @@ function callClaude(prompt) {
       ? prompt.slice(0, INPUT_MAX_CHARS)
       : prompt;
 
-    const args = ['-p', safePrompt, '--dangerously-skip-permissions', '--no-session-persistence'];
+    const args = ['-p', safePrompt, '--no-session-persistence'];
     const opts = {
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' },
+      env: {
+        ...process.env,
+        HOME: process.env.HOME || '/home/node',
+        NO_COLOR: '1',
+        TERM: 'dumb',
+      },
     };
 
     console.log(`[Claude] 시작 | 프롬프트: ${safePrompt.length}자`);
@@ -193,6 +198,10 @@ function callClaude(prompt) {
       console.log(`[Claude] 종료 | code: ${code} | signal: ${signal} | stdout: ${stdout.length}자 | stderr: ${stderr.length}자`);
       if (code === 0) {
         const cleaned = stdout.replace(/\x1B\[[0-9;]*[mGKHF]/g, '').trim();
+        if (!cleaned) {
+          reject(new Error('Claude CLI가 빈 응답으로 종료되었습니다. 인증 상태와 권한 설정을 확인하세요.'));
+          return;
+        }
         console.log(`[Claude] 응답 (cleaned): ${JSON.stringify(cleaned.slice(0, 200))}`);
         resolve(cleaned);
       } else {
@@ -222,6 +231,10 @@ function callClaude(prompt) {
  * @returns {Promise<string>} - 업데이트된 context 문자열
  */
 async function appendContext(channelId, question, answer) {
+  if (!answer.trim()) {
+    return getSession(channelId).context;
+  }
+
   const session = getSession(channelId);
   const newLines = `사용자: ${question}\nClaude: ${answer}`;
   const updated  = session.context
@@ -611,7 +624,7 @@ client.on('messageCreate', async (message) => {
 // 봇 준비 이벤트
 // ─────────────────────────────────────────────
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`[봇 준비 완료] ${client.user.tag} 로그인됨`);
   // 봇 활동 상태 설정
   client.user.setActivity('Claude CLI');
