@@ -2,6 +2,8 @@ import os
 import sys
 import re
 import asyncio
+import collections
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 from uuid import UUID
@@ -15,8 +17,13 @@ import aiofiles
 # Starlette imports for raw ASGI SSE
 from starlette.applications import Starlette
 from starlette.routing import Route
+from starlette.responses import JSONResponse
+from starlette.requests import Request
 from mcp.server.sse import SseServerTransport
 import uvicorn
+
+# 최근 저장 이력 (최대 20건, 메모리)
+_save_history: collections.deque = collections.deque(maxlen=20)
 
 # 환경변수 로드
 load_dotenv()
@@ -64,12 +71,45 @@ async def list_tools() -> list[types.Tool]:
                 },
                 "required": ["url", "title", "content"]
             }
+        ),
+        types.Tool(
+            name="get_last_save",
+            description="가장 최근에 저장된 메모 정보를 반환합니다. save_memo 호출 후 실제 저장 여부를 확인할 때 사용합니다.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "integer",
+                        "description": "조회할 최근 저장 건수 (기본값: 1, 최대: 20)",
+                        "default": 1
+                    }
+                },
+                "required": []
+            }
         )
     ]
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     print(f"[call_tool] name={name}, title={arguments.get('title','')}, folder={arguments.get('folder','')}", file=sys.stderr, flush=True)
+
+    if name == "get_last_save":
+        count = min(int(arguments.get("count", 1)), 20)
+        if not _save_history:
+            return [types.TextContent(type="text", text="저장 이력이 없습니다. (서버 재시작 후 저장된 항목 없음)")]
+
+        items = list(_save_history)[:count]
+        lines = [f"📋 최근 저장 이력 ({len(items)}건)"]
+        for i, item in enumerate(items, 1):
+            lines.append(
+                f"\n[{i}] {item['saved_at']}\n"
+                f"  - 파일명: {item['filename']}\n"
+                f"  - 경로: {item['path']}\n"
+                f"  - 크기: {item['size']} bytes\n"
+                f"  - 제목: {item['title']}"
+            )
+        return [types.TextContent(type="text", text="\n".join(lines))]
+
     if name != "save_memo":
         raise ValueError(f"Unknown tool: {name}")
 
@@ -141,6 +181,16 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
         print(f"[call_tool] verified: {file_path} ({file_size} bytes)", file=sys.stderr, flush=True)
 
+        _save_history.appendleft({
+            "filename": filename,
+            "path": file_path,
+            "folder": target_folder,
+            "size": file_size,
+            "saved_at": now_str,
+            "title": title,
+            "url": url,
+        })
+
         result_text = (
             f"✅ 메모 저장 완료\n"
             f"- 파일명: {filename}\n"
@@ -209,9 +259,19 @@ class MessageHandler:
             # SSEHandler의 finally와 handle_post_message 사이의 극히 좁은 race window 대비 fallback
             print(f"[MessageHandler] Session expired or closed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
 
+async def status_handler(request: Request):
+    history = list(_save_history)
+    return JSONResponse({
+        "status": "ok",
+        "server": "agent-auto-memo",
+        "total_saves": len(history),
+        "recent_saves": history[:10],
+    })
+
 app = Starlette(debug=True, routes=[
     Route("/sse", endpoint=SSEHandler()),
-    Route("/messages", endpoint=MessageHandler(), methods=["POST"])
+    Route("/messages", endpoint=MessageHandler(), methods=["POST"]),
+    Route("/status", endpoint=status_handler, methods=["GET"]),
 ])
 
 
