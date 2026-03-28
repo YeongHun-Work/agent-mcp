@@ -1,0 +1,7 @@
+[
+  {
+    "name": "agent-auto-memo",
+    "url": "http://192.168.0.100:8000/sse",
+    "description": "Obsidian 메모 자동 저장 MCP 서버. 사용자가 메모, 기록, 저장을 요청하면 save_memo 툴을 사용."
+  }
+]
