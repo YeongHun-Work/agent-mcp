@@ -4,6 +4,7 @@ import re
 import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
+from uuid import UUID
 
 from mcp.server import Server
 import mcp.types as types
@@ -106,18 +107,30 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     try:
         # 대상 폴더가 없으면 생성
         os.makedirs(target_dir, exist_ok=True)
-        
+
         # 파일 직접 쓰기 (비동기)
         async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
             await f.write(final_content)
-            
-        return [types.TextContent(
-            type="text", 
-            text=f"성공적으로 메모가 로컬에 저장되었습니다! 경로: '{file_path}'"
-        )]
+
+        # 파일 쓰기 완료 확인 (실제 저장 검증)
+        if not os.path.exists(file_path):
+            raise IOError(f"파일 쓰기 후 파일이 존재하지 않음: {file_path}")
+
+        file_size = os.path.getsize(file_path)
+        print(f"[call_tool] write complete: {file_path} ({file_size} bytes)", file=sys.stderr, flush=True)
+
+        result_text = (
+            f"✅ 메모 저장 완료\n"
+            f"- 파일명: {filename}\n"
+            f"- 저장 경로: {file_path}\n"
+            f"- 폴더: {target_folder}\n"
+            f"- 파일 크기: {file_size} bytes\n"
+            f"- 저장 시각: {now_str}"
+        )
+        return [types.TextContent(type="text", text=result_text)]
     except Exception as e:
         print(f"[call_tool] ERROR: {e}", file=sys.stderr, flush=True)
-        return [types.TextContent(type="text", text=f"메모 로컬 저장 중 실패: {str(e)}")]
+        return [types.TextContent(type="text", text=f"❌ 메모 저장 실패: {str(e)}")]
 
 # ==========================================
 # Transport Runners
@@ -134,14 +147,39 @@ class SSEHandler:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return
-        async with sse.connect_sse(scope, receive, send) as streams:
-            await server.run(streams[0], streams[1], server.create_initialization_options())
+
+        # connect_sse 진입 전 세션 목록 스냅샷
+        sessions_before: set[UUID] = set(sse._read_stream_writers.keys())
+        new_session_id: UUID | None = None
+
+        try:
+            async with sse.connect_sse(scope, receive, send) as streams:
+                # connect_sse가 yield된 시점에 이미 session_id가 등록돼 있음
+                # before/after 비교로 이 연결의 session_id를 캡처
+                new_ids = set(sse._read_stream_writers.keys()) - sessions_before
+                if new_ids:
+                    new_session_id = next(iter(new_ids))
+                    print(f"[SSEHandler] Session started: {new_session_id.hex}", file=sys.stderr, flush=True)
+
+                await server.run(streams[0], streams[1], server.create_initialization_options())
+        except Exception as e:
+            print(f"[SSEHandler] Session ended: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        finally:
+            # MCP 라이브러리가 _read_stream_writers에서 session_id를 제거하지 않는 버그 보완:
+            # 세션 종료 시 직접 제거 → 이후 POST 요청이 404로 깔끔하게 처리됨
+            if new_session_id is not None:
+                sse._read_stream_writers.pop(new_session_id, None)
+                print(f"[SSEHandler] Session cleaned up: {new_session_id.hex}", file=sys.stderr, flush=True)
 
 class MessageHandler:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return
-        await sse.handle_post_message(scope, receive, send)
+        try:
+            await sse.handle_post_message(scope, receive, send)
+        except Exception as e:
+            # SSEHandler의 finally와 handle_post_message 사이의 극히 좁은 race window 대비 fallback
+            print(f"[MessageHandler] Session expired or closed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
 
 app = Starlette(debug=True, routes=[
     Route("/sse", endpoint=SSEHandler()),
