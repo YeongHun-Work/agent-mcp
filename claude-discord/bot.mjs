@@ -1,14 +1,14 @@
 /**
- * Discord + Claude API Bot
+ * Discord + Claude CLI Bot
  * - 슬래시 명령어: /ask, /topic, /history, /skill
  * - 멘션/DM 메시지도 /ask와 동일하게 처리
  * - 채널별 대화 세션을 SQLite에 저장
- * - Anthropic Claude API + MCP 툴 지원 (agentic loop)
+ * - Claude CLI(claude)를 spawn으로 호출 (shell:false)
  */
 
 import 'dotenv/config';
 import {
-  Client as DiscordClient,
+  Client,
   GatewayIntentBits,
   Partials,
   REST,
@@ -16,24 +16,27 @@ import {
   SlashCommandBuilder,
 } from 'discord.js';
 import Database from 'better-sqlite3';
+import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import Anthropic from '@anthropic-ai/sdk';
-import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 
 // ─────────────────────────────────────────────
 // 상수 정의
 // ─────────────────────────────────────────────
-const CLAUDE_MODEL      = 'claude-sonnet-4-6';
-const MAX_TOKENS        = 8192;
-const MAX_TOOL_ITERS    = 10;
-const MSG_PAIR_LIMIT    = 20;    // 메시지 쌍 수 초과 시 압축
-const SUMMARY_PAIRS     = 5;     // 압축 후 유지할 최근 쌍 수
-const INPUT_MAX_CHARS   = 4_000;
-const DISCORD_MSG_LIMIT = 2_000;
+const CLAUDE_TIMEOUT_MS  = 180_000;  // 3분
+const INPUT_MAX_CHARS    = 4_000;    // 입력 최대 길이
+const CONTEXT_MAX_LINES  = 60;       // 이 줄 수 초과 시 요약 압축
+const SUMMARY_LINES      = 12;       // 요약 목표 줄 수
+const DISCORD_MSG_LIMIT  = 2_000;    // Discord 메시지 한 건 최대 길이
+
+// ─────────────────────────────────────────────
+// 시작 환경변수 검증
+// ─────────────────────────────────────────────
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error('[오류] ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다. .env 파일을 확인하세요.');
+  process.exit(1);
+}
 
 // ─────────────────────────────────────────────
 // SQLite 초기화
@@ -50,66 +53,47 @@ const db = new Database(DB_PATH);
 // 테이블 생성 (없으면)
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
-    channel_id   TEXT PRIMARY KEY,
-    topic        TEXT,
-    messages     TEXT DEFAULT '[]',
-    updated_at   INTEGER
+    channel_id  TEXT PRIMARY KEY,
+    topic       TEXT,
+    context     TEXT DEFAULT '',
+    updated_at  INTEGER
   );
   CREATE TABLE IF NOT EXISTS channel_skills (
-    channel_id   TEXT NOT NULL,
-    skill_name   TEXT NOT NULL,
+    channel_id  TEXT NOT NULL,
+    skill_name  TEXT NOT NULL,
     PRIMARY KEY (channel_id, skill_name)
   );
 `);
 
-// 기존 DB 마이그레이션: context 컬럼 → messages 컬럼
-const cols = db.pragma('table_info(sessions)').map((c) => c.name);
-if (cols.includes('context') && !cols.includes('messages')) {
-  db.exec(`ALTER TABLE sessions ADD COLUMN messages TEXT DEFAULT '[]'`);
-  const rows = db.prepare('SELECT channel_id, context FROM sessions').all();
-  const stmt = db.prepare('UPDATE sessions SET messages = ? WHERE channel_id = ?');
-  for (const row of rows) {
-    if (!row.context) continue;
-    const lines = row.context.split('\n');
-    const msgs = [];
-    for (const line of lines) {
-      if (line.startsWith('사용자: ')) msgs.push({ role: 'user', content: line.slice(4) });
-      else if (line.startsWith('Gemini: ')) msgs.push({ role: 'assistant', content: line.slice(8) });
-    }
-    stmt.run(JSON.stringify(msgs), row.channel_id);
-  }
-  console.log('[마이그레이션] context → messages 변환 완료');
-}
-
 /**
  * 채널 세션을 가져온다. 없으면 빈 세션 반환.
  * @param {string} channelId
- * @returns {{ channel_id: string, topic: string|null, messages: string, updated_at: number|null }}
+ * @returns {{ channel_id: string, topic: string|null, context: string, updated_at: number|null }}
  */
 function getSession(channelId) {
   const row = db
     .prepare('SELECT * FROM sessions WHERE channel_id = ?')
     .get(channelId);
-  return row ?? { channel_id: channelId, topic: null, messages: '[]', updated_at: null };
+  return row ?? { channel_id: channelId, topic: null, context: '', updated_at: null };
 }
 
 /**
  * 세션을 저장(upsert)한다.
  * @param {string} channelId
- * @param {{ topic?: string|null, messages?: string }} fields
+ * @param {{ topic?: string|null, context?: string }} fields
  */
 function saveSession(channelId, fields) {
-  const session  = getSession(channelId);
-  const topic    = 'topic'    in fields ? fields.topic    : session.topic;
-  const messages = 'messages' in fields ? fields.messages : session.messages;
+  const session = getSession(channelId);
+  const topic   = 'topic'   in fields ? fields.topic   : session.topic;
+  const context = 'context' in fields ? fields.context : session.context;
   db.prepare(`
-    INSERT INTO sessions (channel_id, topic, messages, updated_at)
+    INSERT INTO sessions (channel_id, topic, context, updated_at)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(channel_id) DO UPDATE SET
       topic      = excluded.topic,
-      messages   = excluded.messages,
+      context    = excluded.context,
       updated_at = excluded.updated_at
-  `).run(channelId, topic, messages, Date.now());
+  `).run(channelId, topic, context, Date.now());
 }
 
 // ─────────────────────────────────────────────
@@ -118,7 +102,7 @@ function saveSession(channelId, fields) {
 
 /**
  * mcp-skills.json에서 등록된 스킬 목록을 로드한다.
- * @returns {{ name: string, url: string, transport?: string, description: string }[]}
+ * @returns {{ name: string, description: string }[]}
  */
 function loadSkills() {
   try {
@@ -160,235 +144,140 @@ function setChannelSkill(channelId, skillName, enabled) {
 }
 
 // ─────────────────────────────────────────────
-// Anthropic 클라이언트 초기화
-// ─────────────────────────────────────────────
-const anthropic = new Anthropic(); // ANTHROPIC_API_KEY 환경변수 자동 사용
-
-// ─────────────────────────────────────────────
-// MCP 연결 헬퍼
+// Claude CLI 호출
 // ─────────────────────────────────────────────
 
 /**
- * mcp-skills.json의 transport 필드('sse' 또는 기본 streamableHttp)로 MCP 클라이언트에 연결.
- * 연결 후 툴 목록을 Anthropic 포맷으로 반환.
- * @param {{ name: string, url: string, transport?: string, description: string }} skill
- * @returns {Promise<{ client: McpClient, tools: Array }>}
- */
-async function connectMcpSkill(skill) {
-  const mcpClient = new McpClient(
-    { name: 'claude-discord', version: '1.0.0' },
-    { capabilities: {} }
-  );
-
-  let transport;
-  if (skill.transport === 'sse') {
-    transport = new SSEClientTransport(new URL(skill.url));
-  } else {
-    transport = new StreamableHTTPClientTransport(new URL(skill.url));
-  }
-
-  await mcpClient.connect(transport);
-  const { tools } = await mcpClient.listTools();
-
-  const anthropicTools = tools.map((t) => ({
-    name: t.name,
-    description: t.description ?? '',
-    input_schema: t.inputSchema ?? { type: 'object', properties: {} },
-  }));
-
-  return { client: mcpClient, tools: anthropicTools };
-}
-
-// ─────────────────────────────────────────────
-// 컨텍스트 압축 저장
-// ─────────────────────────────────────────────
-
-/**
- * messages 배열을 DB에 저장. MSG_PAIR_LIMIT 초과 시 Claude로 압축.
- * @param {string} channelId
- * @param {Array} messages
- */
-async function saveMessagesWithCompression(channelId, messages) {
-  const userMsgCount = messages.filter((m) => m.role === 'user').length;
-
-  if (userMsgCount > MSG_PAIR_LIMIT) {
-    console.log(`[컨텍스트 압축] 채널 ${channelId} - ${userMsgCount}쌍 → 요약 압축`);
-    try {
-      const recentMessages = messages.slice(-(SUMMARY_PAIRS * 2));
-      const oldMessages    = messages.slice(0, -(SUMMARY_PAIRS * 2));
-
-      // 텍스트 메시지만 추출
-      const oldText = oldMessages
-        .filter((m) => typeof m.content === 'string')
-        .map((m) => `${m.role === 'user' ? '사용자' : 'Claude'}: ${m.content}`)
-        .join('\n');
-
-      if (oldText) {
-        const summaryResp = await anthropic.messages.create({
-          model: CLAUDE_MODEL,
-          max_tokens: 1024,
-          messages: [{ role: 'user', content: `다음 대화를 3-5문장으로 요약해줘:\n${oldText}` }],
-        });
-        const summary = summaryResp.content
-          .filter((b) => b.type === 'text')
-          .map((b) => b.text)
-          .join('');
-
-        const compressedMessages = [
-          { role: 'user', content: `[이전 대화 요약]\n${summary}` },
-          { role: 'assistant', content: '이전 대화 내용을 확인했습니다.' },
-          ...recentMessages,
-        ];
-
-        saveSession(channelId, { messages: JSON.stringify(compressedMessages) });
-        return;
-      }
-    } catch (err) {
-      console.error('[컨텍스트 압축 실패]', err.message);
-    }
-  }
-
-  saveSession(channelId, { messages: JSON.stringify(messages) });
-}
-
-// ─────────────────────────────────────────────
-// Claude API 호출 (agentic loop)
-// ─────────────────────────────────────────────
-
-/**
- * Claude API 호출. 활성 MCP 스킬이 있으면 agentic loop 실행.
- * messages 배열을 DB에서 로드하고 저장.
- * @param {string} channelId
- * @param {string} question
+ * Claude CLI를 spawn으로 실행하고 stdout을 반환한다.
+ * @param {string} prompt  - Claude에 전달할 프롬프트
  * @returns {Promise<string>} - Claude 응답 텍스트
  */
-async function callClaude(channelId, question) {
-  const session         = getSession(channelId);
-  const activeSkillNames = getChannelSkills(channelId);
-  const allSkills       = loadSkills();
+function callClaude(prompt) {
+  return new Promise((resolve, reject) => {
+    // 입력 길이 제한
+    const safePrompt = prompt.length > INPUT_MAX_CHARS
+      ? prompt.slice(0, INPUT_MAX_CHARS)
+      : prompt;
 
-  let messages = JSON.parse(session.messages || '[]');
+    const proc = spawn(
+      'claude',
+      ['-p', safePrompt],
+      {
+        shell: false,  // 보안: shell injection 방지
+        env: {
+          ...process.env,
+          NO_COLOR: '1',
+          TERM: 'dumb',
+        },
+      }
+    );
 
-  // 시스템 프롬프트
-  let systemPrompt = 'You are a helpful assistant on Discord. Respond in the same language as the user.';
-  if (session.topic) systemPrompt += `\n\n현재 대화 주제: ${session.topic}`;
+    let stdout = '';
+    let stderr = '';
 
-  // 새 사용자 질문 추가
-  messages.push({ role: 'user', content: question });
+    proc.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
 
-  // MCP 클라이언트 연결
-  const mcpConnections = []; // { client, skillName, tools }
-  const allTools = [];
+    // 타임아웃 처리
+    const timer = setTimeout(() => {
+      proc.kill('SIGTERM');
+      reject(new Error(`Claude CLI 타임아웃 (${CLAUDE_TIMEOUT_MS / 1000}초 초과)`));
+    }, CLAUDE_TIMEOUT_MS);
 
-  for (const skillName of activeSkillNames) {
-    const skill = allSkills.find((s) => s.name === skillName);
-    if (!skill) continue;
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        // ANSI 이스케이프 코드 제거
+        const cleaned = stdout.replace(/\x1B\[[0-9;]*[mGKHF]/g, '').trim();
+        resolve(cleaned);
+      } else {
+        reject(new Error(`Claude CLI 종료 코드 ${code}: ${stderr.trim()}`));
+      }
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      reject(new Error(`Claude CLI 실행 실패: ${err.message}`));
+    });
+  });
+}
+
+// ─────────────────────────────────────────────
+// 대화 컨텍스트 관리
+// ─────────────────────────────────────────────
+
+/**
+ * 컨텍스트에 새 대화 라인을 추가하고,
+ * 60줄 초과 시 Claude로 12줄 요약 압축한다.
+ * @param {string} channelId
+ * @param {string} question
+ * @param {string} answer
+ * @returns {Promise<string>} - 업데이트된 context 문자열
+ */
+async function appendContext(channelId, question, answer) {
+  const session = getSession(channelId);
+  const newLines = `사용자: ${question}\nClaude: ${answer}`;
+  const updated  = session.context
+    ? `${session.context}\n${newLines}`
+    : newLines;
+
+  const lineCount = updated.split('\n').length;
+
+  if (lineCount > CONTEXT_MAX_LINES) {
+    // 60줄 초과 시 Claude로 요약 압축
+    console.log(`[컨텍스트 압축] 채널 ${channelId} - ${lineCount}줄 → ${SUMMARY_LINES}줄로 요약`);
     try {
-      const { client, tools } = await connectMcpSkill(skill);
-      mcpConnections.push({ client, skillName, tools });
-      allTools.push(...tools);
+      const summaryPrompt = `다음 대화를 ${SUMMARY_LINES}줄로 요약해줘:\n${updated}`;
+      const summarized    = await callClaude(summaryPrompt);
+      saveSession(channelId, { context: summarized });
+      return summarized;
     } catch (err) {
-      console.error(`[MCP 연결 실패] ${skillName}: ${err.message}`);
+      // 요약 실패 시 기존 컨텍스트 유지
+      console.error('[컨텍스트 압축 실패]', err.message);
+      saveSession(channelId, { context: updated });
+      return updated;
     }
   }
 
-  let finalText = '';
-  let iterations = 0;
-
-  try {
-    while (iterations < MAX_TOOL_ITERS) {
-      iterations++;
-
-      const response = await anthropic.messages.create({
-        model: CLAUDE_MODEL,
-        max_tokens: MAX_TOKENS,
-        system: systemPrompt,
-        messages,
-        ...(allTools.length > 0 && { tools: allTools }),
-      });
-
-      if (response.stop_reason === 'end_turn') {
-        finalText = response.content
-          .filter((b) => b.type === 'text')
-          .map((b) => b.text)
-          .join('\n');
-        messages.push({ role: 'assistant', content: response.content });
-        break;
-      }
-
-      if (response.stop_reason === 'tool_use') {
-        messages.push({ role: 'assistant', content: response.content });
-
-        const toolUseBlocks = response.content.filter((b) => b.type === 'tool_use');
-        const toolResults   = [];
-
-        for (const toolBlock of toolUseBlocks) {
-          let resultContent = '';
-          try {
-            // 해당 툴을 가진 MCP 연결 찾기
-            const conn = mcpConnections.find((c) =>
-              c.tools.some((t) => t.name === toolBlock.name)
-            );
-            if (!conn) throw new Error(`툴 ${toolBlock.name}을 처리할 MCP 서버를 찾을 수 없음`);
-
-            const mcpResult = await conn.client.callTool({
-              name: toolBlock.name,
-              arguments: toolBlock.input,
-            });
-            resultContent = mcpResult.content
-              .map((c) => (c.type === 'text' ? c.text : JSON.stringify(c)))
-              .join('\n');
-          } catch (err) {
-            resultContent = `오류: ${err.message}`;
-          }
-
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: toolBlock.id,
-            content: resultContent,
-          });
-        }
-
-        messages.push({ role: 'user', content: toolResults });
-        continue;
-      }
-
-      // max_tokens 등 기타 stop_reason
-      finalText = response.content
-        .filter((b) => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n');
-      messages.push({
-        role: 'assistant',
-        content: typeof finalText === 'string' ? finalText : JSON.stringify(finalText),
-      });
-      break;
-    }
-
-    if (!finalText && iterations >= MAX_TOOL_ITERS) {
-      finalText = '(최대 반복 횟수 초과. `/history clear` 또는 다시 시도해주세요.)';
-    }
-  } finally {
-    // MCP 연결 정리
-    for (const { client } of mcpConnections) {
-      try { await client.close(); } catch { /* 무시 */ }
-    }
-  }
-
-  // DB 저장 (압축 포함)
-  await saveMessagesWithCompression(channelId, messages);
-
-  return finalText;
+  saveSession(channelId, { context: updated });
+  return updated;
 }
 
 /**
- * 채널 세션 컨텍스트와 topic을 이용해 Claude를 호출한다.
+ * 채널 세션 컨텍스트와 topic을 이용해 Claude 프롬프트를 구성하고 호출한다.
  * @param {string} channelId
  * @param {string} question
  * @returns {Promise<string>} - Claude 응답
  */
 async function askClaude(channelId, question) {
-  return callClaude(channelId, question);
+  const session      = getSession(channelId);
+  const activeSkills = getChannelSkills(channelId);
+  const allSkills    = loadSkills();
+
+  let prompt = '';
+
+  // 활성 스킬 지침 주입
+  if (activeSkills.length > 0) {
+    const instructions = activeSkills
+      .map((name) => {
+        const skill = allSkills.find((s) => s.name === name);
+        return skill ? `- ${skill.name}: ${skill.description}` : null;
+      })
+      .filter(Boolean)
+      .join('\n');
+    if (instructions) {
+      prompt += `[활성 MCP 툴 - 필요 시 사용]\n${instructions}\n\n`;
+    }
+  }
+
+  // 프롬프트 구성: topic → 이전 대화 → 질문 순
+  if (session.topic)   prompt += `주제: ${session.topic}\n\n`;
+  if (session.context) prompt += `이전 대화:\n${session.context}\n\n`;
+  prompt += `질문: ${question}`;
+
+  const answer = await callClaude(prompt);
+  await appendContext(channelId, question, answer);
+  return answer;
 }
 
 // ─────────────────────────────────────────────
@@ -462,7 +351,7 @@ try {
   // 무시: 일부 환경에서 없을 수 있음
 }
 
-const client = new DiscordClient({
+const client = new Client({
   intents,
   partials: [Partials.Channel, Partials.Message], // DM 처리를 위해 필요
 });
@@ -492,7 +381,7 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName('history')
-    .setDescription('현재 채널의 대화 히스토리를 출력합니다')
+    .setDescription('현재 채널의 대화 히스토리를 관리합니다')
     .addSubcommand((sub) =>
       sub.setName('show').setDescription('대화 히스토리를 조회합니다')
     )
@@ -643,8 +532,8 @@ client.on('interactionCreate', async (interaction) => {
 
     if (sub === 'clear') {
       try {
-        saveSession(channelId, { messages: '[]' });
-        await interaction.reply('대화 히스토리가 초기화되었습니다.');
+        saveSession(channelId, { context: '', topic: null });
+        await interaction.reply('✅ 이 채널의 대화 히스토리가 초기화되었습니다.');
       } catch (err) {
         console.error('[/history clear 오류]', err.message);
         await interaction.reply(`히스토리 초기화 중 오류가 발생했습니다: ${err.message}`);
@@ -653,22 +542,15 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // sub === 'show'
-    const session  = getSession(channelId);
-    const messages = JSON.parse(session.messages || '[]');
+    const session = getSession(channelId);
 
-    if (messages.length === 0) {
+    if (!session.context) {
       await interaction.reply('아직 이 채널에 대화 히스토리가 없습니다.');
       return;
     }
 
     const topicLine = session.topic ? `**주제:** ${session.topic}\n\n` : '';
-    // 텍스트 메시지만 표시 (tool_use/tool_result 제외)
-    const historyText = messages
-      .filter((m) => typeof m.content === 'string' && m.content.length > 0)
-      .map((m) => `${m.role === 'user' ? '사용자' : 'Claude'}: ${m.content}`)
-      .join('\n');
-
-    const fullText = `${topicLine}**대화 히스토리:**\n\`\`\`\n${historyText}\n\`\`\``;
+    const fullText  = `${topicLine}**대화 히스토리:**\n\`\`\`\n${session.context}\n\`\`\``;
 
     await interaction.deferReply();
     await replyInChunks(interaction, fullText);
@@ -726,6 +608,8 @@ client.on('messageCreate', async (message) => {
 
 client.once('ready', async () => {
   console.log(`[봇 준비 완료] ${client.user.tag} 로그인됨`);
+  // 봇 활동 상태 설정
+  client.user.setActivity('Claude CLI');
   // 봇 시작 시 슬래시 명령어 자동 등록
   await registerCommands();
 });
@@ -749,11 +633,6 @@ process.on('uncaughtException', (err) => {
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
   console.error('[오류] DISCORD_TOKEN 환경변수가 설정되지 않았습니다. .env 파일을 확인하세요.');
-  process.exit(1);
-}
-
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error('[오류] ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다. .env 파일을 확인하세요.');
   process.exit(1);
 }
 

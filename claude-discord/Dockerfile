@@ -14,6 +14,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sqlite3 \
   && rm -rf /var/lib/apt/lists/*
 
+# ─── Claude CLI 전역 설치 ─────────────────────────────────────────────────────
+RUN npm install -g @anthropic-ai/claude-code
+
 # ─── 작업 디렉토리 설정 ───────────────────────────────────────────────────────
 WORKDIR /app
 
